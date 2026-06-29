@@ -392,12 +392,54 @@ FAISS `IndexFlatIP` — один процесс. Для продакшена с 
 - В `agent_core` — пул ZMQ-клиентов с round-robin
 - Или ZMQ ROUTER/DEALER вместо REQ/REP (нужна доработка)
 
-## 8. Web-UI (быстрый старт интерфейса)
+## 8. UI — Tauri desktop app (основной) и Web-UI (быстрый fallback)
 
-Если нужен просто чат-интерфейс в браузере без сборки Tauri:
+### 8.1 Tauri dev-режим (нативное окно, hot-reload)
+
+**Системные требования (один раз):**
+
+| Платформа | Установить |
+|---|---|
+| Linux (Debian/Ubuntu) | `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libssl-dev` + [Rust](https://rustup.rs) + Node.js 18+ |
+| macOS | `brew install node rustup-init` (webkit входит в систему) + Xcode Command Line Tools |
+| Windows | [Rust](https://win.rustup.rs/x86_64) + [Node.js LTS](https://nodejs.org) + [VS Build Tools 2022](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (workload "Desktop development with C++") |
+
+**Запуск:**
+```bash
+bash scripts/dev_tauri.sh        # Linux/macOS
+.\scripts\dev_tauri.ps1          # Windows (PowerShell)
+```
+
+Скрипт делает:
+1. Проверяет что Rust, Node.js, backend-сервисы — на месте
+2. `npm install` если `frontend/node_modules` нет
+3. `cargo install tauri-cli` если `cargo tauri` не доступен
+4. `cargo tauri dev` — поднимает Vite dev-server :5173, компилирует Rust
+   backend, открывает нативное окно приложения
+
+**Что увидишь:**
+- Нативное окно "Aionet — Local AI Agent" (1280×800)
+- Левая колонка: 3D аватар (Three.js icosahedron с глазами/ртом)
+- Правая колонка: чат с историей, tool-call traces
+- WebSocket к `avatar_bridge` (:8765) для эмоций аватара
+- ZMQ REQ к `agent_core` (:5550) через Rust IPC layer
+- Hot-reload: правка `App.tsx`/`styles.css` обновляет UI без перезапуска
+
+**Сборка установщика (опционально):**
+```bash
+cd rust && cargo tauri build
+# Linux:   rust/target/release/bundle/deb/aionet_0.1.0_amd64.deb
+# macOS:   rust/target/release/bundle/dmg/Aionet_0.1.0.dmg
+# Windows: rust/target/release/bundle/msi/Aionet_0.1.0_x64.msi
+#          rust/target/release/bundle/nsis/Aionet_0.1.0_x64-setup.exe
+```
+
+### 8.2 Web-UI (быстрый fallback без Rust)
+
+Если Rust не установлен и нужен просто чат в браузере:
 
 ```bash
-# Linux/macOS — в отдельном терминале (сервисы уже запущены)
+# Linux/macOS
 PYTHONPATH=python:proto/_gen python scripts/web_ui.py
 
 # Windows (PowerShell)
@@ -405,9 +447,9 @@ $env:PYTHONPATH = "python;proto\_gen"
 python scripts\web_ui.py
 ```
 
-Откройте **http://127.0.0.1:8080** в браузере.
+Открой **http://127.0.0.1:8080** в браузере.
 
-**Что умеет Web-UI:**
+**Что умеет Web-UI** (упрощённая версия Tauri-фронтенда):
 - Чат с историей сообщений (user/assistant)
 - Отображение tool-call traces (имя, аргументы, результат, длительность)
 - Простой CSS-аватар с анимацией (speaking/thinking/idle)
@@ -415,20 +457,22 @@ python scripts\web_ui.py
 - Session ID сохраняется между запросами
 - Health-check каждые 30с
 
-**Архитектура:**
+**Архитектура Web-UI:**
 ```
 Browser ──HTTP──► web_ui.py (:8080) ──ZMQ REQ──► agent_core (:5550)
      │                                              │
      └──WS──► avatar_bridge (:8765) ◄──ZMQ PUB────┘
 ```
 
-**Когда нужен Tauri вместо Web-UI:**
-- Нативное десктоп-приложение (MSI/NSIS installer)
-- 3D VRM-аватар (Three.js с blendshapes)
-- Системные уведомления, tray icon
-- Локальный доступ к файлам через Tauri capabilities
-
-Tauri требует Rust toolchain + Node.js — см. README.md § "Вариант B".
+**Когда что использовать:**
+| Сценарий | Tauri | Web-UI |
+|---|---|---|
+| Разработка UI (hot-reload) | ✅ | ✅ |
+| 3D VRM-аватар (будущее) | ✅ | ❌ |
+| Нативные уведомления, tray | ✅ | ❌ |
+| Быстрый smoke-test backend | ❌ (долго собирать) | ✅ |
+| CI/CD без Rust | ❌ | ✅ |
+| Production для конечного пользователя | ✅ (установщик) | ❌ |
 
 ---
 

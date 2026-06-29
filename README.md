@@ -155,32 +155,46 @@ Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 5550..5555,
 
 Все 7 портов должны слушать: 11434 (Ollama), 5550-5555 (ZMQ), 8765 (WS).
 
-### Открыть интерфейс (Web-UI)
+### Открыть интерфейс
 
-После того как сервисы запущены, поднимите Web-UI — простой чат в браузере
-(не требует Rust/Node.js, в отличие от Tauri-десктопа):
+После того как backend-сервисы запущены, подними UI. Есть два варианта:
 
+#### Вариант 1: Tauri desktop app (основной, нативный)
+
+Требует одноразовой установки Rust toolchain + Node.js. После этого —
+`cargo tauri dev` запускает нативное окно приложения с hot-reload.
+
+**Linux/macOS:**
 ```bash
-# Linux/macOS — в отдельном терминале
-PYTHONPATH=python:proto/_gen python scripts/web_ui.py
-
-# Windows (PowerShell)
-$env:PYTHONPATH = "python;proto\_gen"
-python scripts\web_ui.py
+# Установка (один раз):
+#   Rust:    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+#   Node.js: brew install node  /  apt install nodejs npm
+#   Linux доп.: sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+bash scripts/dev_tauri.sh
 ```
 
-Откройте в браузере: **http://127.0.0.1:8080**
-
-Web-UI пробрасывает запросы к `agent_core` через ZMQ и подключается к
-`avatar_bridge` через WebSocket для анимации аватара. Параллельно можно
-запускать тесты:
-
-```bash
-PYTHONPATH=python:proto/_gen python tests/test_integration.py
+**Windows (PowerShell):**
+```powershell
+# Установка (один раз):
+#   Rust:    winget install Rustlang.Rustup
+#   Node.js: winget install OpenJS.NodeJS.LTS
+#   Build Tools: winget install Microsoft.VisualStudio.2022.BuildTools
+#                (выбрать "Desktop development with C++")
+.\scripts\dev_tauri.ps1
 ```
 
-> **Tauri desktop** (опционально, для нативного приложения): требует Rust + Node.js.
-> См. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) § 8.
+Скрипт сам проверит зависимости, поставит npm-пакеты и `tauri-cli`,
+запустит Vite dev-server (:5173) и откроет окно Tauri. **Ctrl-C** — стоп.
+
+#### Вариант 2: Web-UI (быстрый, без Rust)
+
+Если Rust не установлен и нужен просто чат в браузере:
+```bash
+PYTHONPATH=python:proto/_gen python scripts/web_ui.py   # Linux/macOS
+python scripts\web_ui.py                                # Windows (после $env:PYTHONPATH)
+```
+Открой **http://127.0.0.1:8080**. Web-UI — это упрощённая версия без 3D
+аватара и нативных фич, подходит для быстрого тестирования backend'а.
 
 ---
 

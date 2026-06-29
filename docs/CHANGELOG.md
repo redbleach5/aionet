@@ -54,6 +54,11 @@
 - **Web-UI** (`scripts/web_ui.py` + `web_ui/`) — простой чат в браузере
   через HTTP+WebSocket, не требует Rust/Node.js. Альтернатива Tauri-десктопу
   для быстрого тестирования backend'а.
+- **Tauri dev-mode launcher** (`scripts/dev_tauri.sh` + `.ps1`) —
+  кроссплатформенный запуск `cargo tauri dev` с проверкой зависимостей
+  (Rust, Node.js, system libs) и health-check'ом backend'а.
+- **Tauri icons** (`scripts/gen_icons.py` + `rust/icons/`) — генерация
+  icon.png/icon.ico/icon_128.png для dev и build.
 - **HashEmbedder fallback** в `memory/faiss_memory.py` и
   `agent_core/agent.py` (LoopDetector)
 
@@ -98,6 +103,8 @@
 - `config.toml` — `candidate_models` начинается с `mock:test-7b` для тестов
 - `config.toml` — `gc_rebuild_threshold = 1000` (новый параметр)
 - `config.toml` — `browser sandbox = false` с explanatory comment
+- `rust/tauri.conf.json` — `bundle.targets = "all"` (кроссплатформенный),
+  добавлены секции `linux` и `macOS`, исправлены пути иконок
 
 ### Removed
 - `scripts/start_all.sh` — дубликат `scripts/start_bg.sh`
