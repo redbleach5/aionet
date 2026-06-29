@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aionet — Local AI Agent</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Левая колонка: аватар -->
+    <div class="avatar-zone">
+      <div class="avatar-circle" id="avatar">
+        <div class="avatar-eyes">
+          <span class="eye"></span>
+          <span class="eye"></span>
+        </div>
+        <div class="avatar-mouth" id="mouth"></div>
+      </div>
+      <div class="avatar-status">
+        <span class="dot" id="ws-dot"></span>
+        <span id="avatar-state">idle</span>
+      </div>
+      <div class="avatar-emotion" id="emotion-display">нейтральное</div>
+    </div>
+
+    <!-- Правая колонка: чат -->
+    <div class="chat-zone">
+      <div class="chat-header">
+        <h1>Aionet</h1>
+        <span class="subtitle">Локальный AI-агент · ZeroMQ · MCP</span>
+        <span class="status" id="health-status">checking...</span>
+      </div>
+
+      <div class="chat-messages" id="messages">
+        <div class="msg assistant">
+          <div class="meta">Aionet</div>
+          Привет! Я — Aionet, локальный AI-агент. Спросите что-нибудь — я могу
+          запускать shell-команды, читать/писать файлы, искать пакеты через
+          WinGet и работать с браузером.
+        </div>
+      </div>
+
+      <div class="chat-input">
+        <textarea
+          id="input"
+          placeholder="Напишите сообщение агенту… (Enter — отправить, Shift+Enter — перенос)"
+          rows="1"
+          disabled
+        ></textarea>
+        <button id="send-btn" disabled>Отправить</button>
+      </div>
+
+      <div class="chat-footer">
+        <span>session: <code id="session-id">—</code></span>
+        <span id="last-meta">—</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

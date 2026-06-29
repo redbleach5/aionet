@@ -51,6 +51,9 @@
   chromium + сеть, несовместимо с `--network none`
 - **Mock Ollama** (`scripts/mock_ollama.py`) — HTTP-сервер, имитирует
   Ollama API для тестов без реальной LLM
+- **Web-UI** (`scripts/web_ui.py` + `web_ui/`) — простой чат в браузере
+  через HTTP+WebSocket, не требует Rust/Node.js. Альтернатива Tauri-десктопу
+  для быстрого тестирования backend'а.
 - **HashEmbedder fallback** в `memory/faiss_memory.py` и
   `agent_core/agent.py` (LoopDetector)
 

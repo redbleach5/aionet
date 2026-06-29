@@ -155,6 +155,33 @@ Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 5550..5555,
 
 Все 7 портов должны слушать: 11434 (Ollama), 5550-5555 (ZMQ), 8765 (WS).
 
+### Открыть интерфейс (Web-UI)
+
+После того как сервисы запущены, поднимите Web-UI — простой чат в браузере
+(не требует Rust/Node.js, в отличие от Tauri-десктопа):
+
+```bash
+# Linux/macOS — в отдельном терминале
+PYTHONPATH=python:proto/_gen python scripts/web_ui.py
+
+# Windows (PowerShell)
+$env:PYTHONPATH = "python;proto\_gen"
+python scripts\web_ui.py
+```
+
+Откройте в браузере: **http://127.0.0.1:8080**
+
+Web-UI пробрасывает запросы к `agent_core` через ZMQ и подключается к
+`avatar_bridge` через WebSocket для анимации аватара. Параллельно можно
+запускать тесты:
+
+```bash
+PYTHONPATH=python:proto/_gen python tests/test_integration.py
+```
+
+> **Tauri desktop** (опционально, для нативного приложения): требует Rust + Node.js.
+> См. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) § 8.
+
 ---
 
 ## 🏗 Архитектура
@@ -210,7 +237,8 @@ local-ai-agent/
 │   ├── src/                     # Rust backend (ZMQ REQ → agent_core)
 │   └── frontend/                # React + Three.js (чат + аватар)
 ├── docker/                      # Dockerfile.toolbox + seccomp + AppArmor
-├── scripts/                     # gen_proto.sh, start_bg.sh/.ps1, stop_bg.sh/.ps1, mock_ollama.py, build_sandbox.sh
+├── scripts/                     # gen_proto.sh, start_bg.sh/.ps1, stop_bg.sh/.ps1, mock_ollama.py, web_ui.py, build_sandbox.sh
+├── web_ui/                      # Web-UI: index.html, styles.css, app.js (vanilla JS чат)
 ├── tests/                       # test_sprint1, test_memory_unit, test_integration, test_load
 └── docs/                        # ARCHITECTURE, DEPLOYMENT, TESTING, CHANGELOG, ...
 ```

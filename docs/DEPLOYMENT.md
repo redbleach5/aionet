@@ -392,7 +392,47 @@ FAISS `IndexFlatIP` — один процесс. Для продакшена с 
 - В `agent_core` — пул ZMQ-клиентов с round-robin
 - Или ZMQ ROUTER/DEALER вместо REQ/REP (нужна доработка)
 
-## 8. Мониторинг
+## 8. Web-UI (быстрый старт интерфейса)
+
+Если нужен просто чат-интерфейс в браузере без сборки Tauri:
+
+```bash
+# Linux/macOS — в отдельном терминале (сервисы уже запущены)
+PYTHONPATH=python:proto/_gen python scripts/web_ui.py
+
+# Windows (PowerShell)
+$env:PYTHONPATH = "python;proto\_gen"
+python scripts\web_ui.py
+```
+
+Откройте **http://127.0.0.1:8080** в браузере.
+
+**Что умеет Web-UI:**
+- Чат с историей сообщений (user/assistant)
+- Отображение tool-call traces (имя, аргументы, результат, длительность)
+- Простой CSS-аватар с анимацией (speaking/thinking/idle)
+- WebSocket-подключение к `avatar_bridge` (:8765) для эмоций
+- Session ID сохраняется между запросами
+- Health-check каждые 30с
+
+**Архитектура:**
+```
+Browser ──HTTP──► web_ui.py (:8080) ──ZMQ REQ──► agent_core (:5550)
+     │                                              │
+     └──WS──► avatar_bridge (:8765) ◄──ZMQ PUB────┘
+```
+
+**Когда нужен Tauri вместо Web-UI:**
+- Нативное десктоп-приложение (MSI/NSIS installer)
+- 3D VRM-аватар (Three.js с blendshapes)
+- Системные уведомления, tray icon
+- Локальный доступ к файлам через Tauri capabilities
+
+Tauri требует Rust toolchain + Node.js — см. README.md § "Вариант B".
+
+---
+
+## 9. Мониторинг
 
 ### Healthcheck
 ```bash

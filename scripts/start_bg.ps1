@@ -113,7 +113,8 @@ function Test-Port {
 }
 
 # ── Запуск процесса в фоне с лог-файлом ──
-$StartedPids = @()
+# Используем $script: scope чтобы PIDs накапливались между вызовами функции
+$script:StartedPids = @()
 function Start-BgService {
   param(
     [string]$Name,
@@ -148,7 +149,6 @@ function Start-BgService {
 
   # Асинхронный вывод в лог-файл
   $logPath = Join-Path $ProjectRoot "logs\$LogFile"
-  $script:logStreams = @{}
   $logWriter = [System.IO.StreamWriter]::new($logPath, $false, [System.Text.Encoding]::UTF8)
   $logWriter.AutoFlush = $true
 
@@ -168,7 +168,7 @@ function Start-BgService {
   $proc.BeginOutputReadLine()
   $proc.BeginErrorReadLine()
 
-  $StartedPids += $proc.Id
+  $script:StartedPids += $proc.Id
   Write-Host "  $Name : PID=$($proc.Id)"
   return $proc.Id
 }
@@ -240,9 +240,9 @@ Start-BgService -Name "agent_core" -ArgumentList @("-m", "agent_core") -LogFile 
 Start-Sleep -Seconds 2
 
 # Сохраняем PID'ы
-$StartedPids | Out-File -FilePath "logs\pids.txt" -Encoding utf8
+$script:StartedPids | Out-File -FilePath "logs\pids.txt" -Encoding utf8
 Write-Host ""
-Write-Host "[i] $($StartedPids.Count) processes started. PIDs saved to logs\pids.txt"
+Write-Host "[i] $($script:StartedPids.Count) processes started. PIDs saved to logs\pids.txt"
 
 # Проверка портов
 Write-Host ""
