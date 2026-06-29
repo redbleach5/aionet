@@ -66,6 +66,7 @@ Docker-песочнице, FAISS-память с кривой забывания
 
 Самый быстрый способ проверить, что всё работает:
 
+**Linux / macOS:**
 ```bash
 # 1. Установить Python-зависимости
 pip install pyzmq protobuf grpcio-tools requests faiss-cpu tenacity \
@@ -81,7 +82,37 @@ bash scripts/start_bg.sh
 PYTHONPATH=python:proto/_gen python tests/test_integration.py   # 9/9
 PYTHONPATH=python:proto/_gen python tests/test_sprint1.py        # 21/21
 PYTHONPATH=python:proto/_gen python tests/test_memory_unit.py    # 12/12
+
+# 5. Остановить сервисы
+bash scripts/stop_bg.sh
 ```
+
+**Windows (PowerShell):**
+```powershell
+# 1. Установить Python-зависимости
+pip install pyzmq protobuf grpcio-tools requests faiss-cpu tenacity `
+            mcp websockets pydantic numpy
+
+# 2. Сгенерировать protobuf-биндинги
+python -m grpc_tools.protoc -Iproto --python_out=proto/_gen proto/messages.proto
+
+# 3. Запустить mock-Ollama + все сервисы
+.\scripts\start_bg.ps1
+
+# 4. Прогнать тесты
+$env:PYTHONPATH = "python;proto\_gen"
+python tests\test_integration.py    # 9/9
+python tests\test_sprint1.py        # 21/21
+python tests\test_memory_unit.py    # 12/12
+
+# 5. Остановить сервисы
+.\scripts\stop_bg.ps1
+```
+
+> **PowerShell Execution Policy:** если скрипт блокируется, выполните:
+> ```powershell
+> Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+> ```
 
 Mock-Ollama (`scripts/mock_ollama.py`) — rule-based HTTP-сервер, имитирует
 `/api/chat`, `/api/tags`, `/api/show`. Эмитит tool_calls на "list files" / "calc".
@@ -97,13 +128,14 @@ ollama pull mistral:7b-instruct   # или llama3.1:8b-instruct
 pip install -r python/requirements.txt
 
 # 3. Опционально: Docker-песочница
-./scripts/build_sandbox.sh
+./scripts/build_sandbox.sh            # Linux/macOS
 
 # 4. В config.toml убрать "mock:test-7b" из candidate_models
 #    (или оставить — Ollama-клиент выберет первую доступную)
 
 # 5. Запуск сервисов
-bash scripts/start_bg.sh
+bash scripts/start_bg.sh               # Linux/macOS
+.\scripts\start_bg.ps1 -SkipMockOllama # Windows (реальная Ollama уже работает)
 
 # 6. Десктоп-приложение (требует Rust + Node.js)
 cd rust && npm --prefix frontend install && cargo tauri dev
@@ -112,8 +144,13 @@ cd rust && npm --prefix frontend install && cargo tauri dev
 ### Проверка здоровья
 
 ```bash
-curl http://127.0.0.1:11434/api/tags | jq '.models[].name'  # Ollama
-ss -tln | grep -E ":555[0-5]|:8765"                          # ZMQ + WS
+# Linux/macOS
+curl -s http://127.0.0.1:11434/api/tags | jq '.models[].name'  # Ollama
+ss -tln | grep -E ":555[0-5]|:8765"                            # ZMQ + WS
+
+# Windows (PowerShell)
+(Invoke-RestMethod http://127.0.0.1:11434/api/tags).models.name  # Ollama
+Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 5550..5555,8765 }
 ```
 
 Все 7 портов должны слушать: 11434 (Ollama), 5550-5555 (ZMQ), 8765 (WS).
@@ -173,7 +210,7 @@ local-ai-agent/
 │   ├── src/                     # Rust backend (ZMQ REQ → agent_core)
 │   └── frontend/                # React + Three.js (чат + аватар)
 ├── docker/                      # Dockerfile.toolbox + seccomp + AppArmor
-├── scripts/                     # gen_proto.sh, start_bg.sh, mock_ollama.py, build_sandbox.sh
+├── scripts/                     # gen_proto.sh, start_bg.sh/.ps1, stop_bg.sh/.ps1, mock_ollama.py, build_sandbox.sh
 ├── tests/                       # test_sprint1, test_memory_unit, test_integration, test_load
 └── docs/                        # ARCHITECTURE, DEPLOYMENT, TESTING, CHANGELOG, ...
 ```

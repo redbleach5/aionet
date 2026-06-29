@@ -87,14 +87,30 @@ dev/prod, гайд по замене компонентов.
 ```
 
 **Скрипт запуска:**
-```bash
-bash scripts/start_bg.sh      # поднимает 1-6, пишет логи в logs/
-```
+
+| Платформа | Запуск | Остановка |
+|---|---|---|
+| Linux / macOS | `bash scripts/start_bg.sh` | `bash scripts/stop_bg.sh` |
+| Windows (PowerShell) | `.\scripts\start_bg.ps1` | `.\scripts\stop_bg.ps1` |
+| Windows (реальная Ollama уже работает) | `.\scripts\start_bg.ps1 -SkipMockOllama` | `.\scripts\stop_bg.ps1` |
+
+> **Windows note:** если PowerShell блокирует скрипты, выполните один раз:
+> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+> (только для текущей сессии, безопасно).
+
+Скрипты поднимают сервисы в правильном порядке, пишут логи в `logs/`,
+сохраняют PID'ы в `logs/pids.txt` для последующей остановки.
 
 **Проверка здоровья:**
+
 ```bash
-curl http://127.0.0.1:11434/api/tags | jq '.models[].name'  # Ollama
-ss -tln | grep -E ":555[0-5]|:8765"                          # все ZMQ + WS
+# Linux/macOS
+curl -s http://127.0.0.1:11434/api/tags | jq '.models[].name'    # Ollama
+ss -tln | grep -E ":555[0-5]|:8765"                               # все ZMQ + WS
+
+# Windows (PowerShell)
+(Invoke-RestMethod http://127.0.0.1:11434/api/tags).models.name   # Ollama
+Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 5550..5555,8765 }
 ```
 
 ## 4. Конфиги для разных сред
@@ -107,8 +123,12 @@ ss -tln | grep -E ":555[0-5]|:8765"                          # все ZMQ + WS
 - Embedder: HashEmbedder (если нет sentence-transformers)
 
 ```bash
-# dev — без Ollama, mock-сервер
+# dev — Linux/macOS, без Ollama, mock-сервер
 AIONET_CONFIG=config.toml bash scripts/start_bg.sh
+
+# dev — Windows (PowerShell)
+$env:AIONET_CONFIG = "config.toml"
+.\scripts\start_bg.ps1
 ```
 
 ### test (интеграционное тестирование)
@@ -118,9 +138,16 @@ AIONET_CONFIG=config.toml bash scripts/start_bg.sh
 - Embedder: HashEmbedder
 
 ```bash
+# Linux/macOS
 rm -f data/memory.faiss data/memory.sqlite
 bash scripts/start_bg.sh
 PYTHONPATH=python:proto/_gen python tests/test_integration.py
+
+# Windows (PowerShell)
+Remove-Item data\memory.faiss, data\memory.sqlite -ErrorAction SilentlyContinue
+.\scripts\start_bg.ps1
+$env:PYTHONPATH = "python;proto\_gen"
+python tests\test_integration.py
 ```
 
 ### prod (требует реальную Ollama + Docker)
@@ -162,8 +189,20 @@ backend = "html5_threejs"   # или "homunculus" когда станет дос
 ```
 
 ```bash
+# Linux/macOS
 AIONET_CONFIG=config.prod.toml bash scripts/start_bg.sh
+
+# Windows (PowerShell) — paths use Windows conventions
+$env:AIONET_CONFIG = "config.prod.toml"
+.\scripts\start_bg.ps1 -SkipMockOllama   # реальная Ollama уже работает
 ```
+
+> **Windows prod paths:** замените Unix-пути в `config.prod.toml`:
+> - `log_file = "C:/ProgramData/aionet/logs/aionet.log"`
+> - `seccomp_profile = "C:/ProgramData/aionet/seccomp-profile.json"`
+> - `index_path = "C:/ProgramData/aionet/data/memory.faiss"`
+> - AppArmor на Windows не работает — оставьте `apparmor_profile = ""`
+> - Docker Desktop на Windows поддерживает `--security-opt seccomp=...`
 
 ## 5. Гайд по замене компонентов
 

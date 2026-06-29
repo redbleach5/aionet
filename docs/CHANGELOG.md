@@ -63,7 +63,9 @@
 - `tests/test_memory_unit.py` — 12 unit-тестов (ранжирование, забывание, GC, session isolation)
 - `tests/test_integration.py` — 9 end-to-end сценариев
 - `tests/test_load.py` — нагрузочные тесты ZeroMQ+FAISS
-- `scripts/start_bg.sh` — bash-лаунчер всех сервисов
+- `scripts/start_bg.sh` — bash-лаунчер всех сервисов (Linux/macOS)
+- `scripts/start_bg.ps1` — PowerShell-лаунчер для Windows
+- `scripts/stop_bg.sh` / `scripts/stop_bg.ps1` — остановка сервисов
 
 ### Fixed — Баги найденные в процессе
 - **Cross-session leak в `retrieve()`** — `session_id` применялся только как
