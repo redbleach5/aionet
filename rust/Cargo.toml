@@ -12,6 +12,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
+prost-build = "0.13"
+protoc-bin-vendored = "3.0"  # vendored protoc binary — не требует системной установки
 
 [dependencies]
 tauri = { version = "2.0", features = [] }
@@ -27,6 +29,7 @@ uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
 toml = "0.8"
+dirs = "5.0"  # для поиска config.toml в стандартных местах
 
 [features]
 default = ["custom-protocol"]
