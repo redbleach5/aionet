@@ -213,6 +213,15 @@ class MCPBroker(ToolRunner):
         return out
 
     def call(self, *, tool_name: str, arguments, timeout_ms: int = 30000) -> ToolExecutionResult:
+        """Вызывает инструмент с retry и timeout.
+
+        Retry-стратегия (как в LLM OllamaClient):
+          * До 3 попыток с экспоненциальной задержкой (1с, 2с, 4с)
+          * При broken session — следующая попытка пересоздаёт MCP-сессию
+          * Timeout на каждый вызов = timeout_ms (не на все retry суммарно)
+          * Ретраим только инфраструктурные ошибки (timeout, broken pipe),
+            НЕ ретраим логические ошибки инструмента (exit_code != 0, ok=False)
+        """
         if "/" not in tool_name:
             return ToolExecutionResult(ok=False, output=None,
                                         error=f"tool name must be '<server>/<tool>', got {tool_name!r}")
@@ -240,14 +249,44 @@ class MCPBroker(ToolRunner):
             args_dict = {"command": args_dict.get("command"),
                          "args": args_dict.get("args", [])}
             short = real_tool
-        try:
-            fut = asyncio.run_coroutine_threadsafe(
-                client.call_tool(short, args_dict),
-                self._loop,
-            )
-            return fut.result(timeout=timeout_ms / 1000.0)
-        except Exception as e:
-            return ToolExecutionResult(ok=False, output=None, error=str(e))
+
+        # Retry-цикл: 3 попытки, экспоненциальная задержка
+        max_attempts = 3
+        base_delay = 1.0  # секунды
+        last_error: str | None = None
+        for attempt in range(max_attempts):
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    client.call_tool(short, args_dict),
+                    self._loop,
+                )
+                result = fut.result(timeout=timeout_ms / 1000.0)
+                # Успех (или логическая ошибка инструмента — НЕ ретраим)
+                if attempt > 0:
+                    log.info("tool '%s' succeeded after %d attempts", tool_name, attempt + 1)
+                return result
+            except asyncio.TimeoutError:
+                last_error = f"tool '{tool_name}' timed out after {timeout_ms}ms"
+                log.warning("%s (attempt %d/%d)", last_error, attempt + 1, max_attempts)
+            except Exception as e:
+                last_error = str(e)
+                # BrokenPipe / ConnectionReset — инфраструктурная, ретраим
+                err_str = str(e).lower()
+                is_infrastructure = any(m in err_str for m in
+                                        ("broken pipe", "connection reset", "closed",
+                                         "session", "eof", "pipe"))
+                if not is_infrastructure:
+                    # Логическая ошибка — не ретраим
+                    return ToolExecutionResult(ok=False, output=None, error=last_error)
+                log.warning("tool '%s' infrastructure error (attempt %d/%d): %s",
+                            tool_name, attempt + 1, max_attempts, e)
+            # Задержка перед retry (кроме последней попытки)
+            if attempt < max_attempts - 1:
+                delay = base_delay * (2 ** attempt)
+                log.info("retrying in %.1fs...", delay)
+                time.sleep(delay)
+        return ToolExecutionResult(ok=False, output=None,
+                                    error=f"tool '{tool_name}' failed after {max_attempts} attempts: {last_error}")
 
 
 # =============================================================================

@@ -23,31 +23,27 @@ EMBED_DIM = 384  # совпадает с all-MiniLM-L6-v2
 def hash_embed(text: str, dim: int = EMBED_DIM) -> np.ndarray:
     """Детерминированный хеш-эмбеддинг: text → dim-мерный L2-нормализованный вектор.
 
-    Использует SHA-256 для генерации enough-энтропии, потом растягивает в dim.
-    Одинаковый текст → одинаковый вектор. Разные тексты → разные (но не семантически) векторы.
+    Использует SHA-256 для генерации enough-энтропии. Каждый элемент вектора
+    получается из отдельного хеша (dim хешей), что даёт независимые значения.
+    Одинаковый текст → одинаковый вектор. Разные тексты → разные (но не
+    семантически) векторы.
+
+    Значения сразу в [0, 1) (через hash % 10000 / 10000), без overflow.
     """
     if not text:
         return np.zeros(dim, dtype=np.float32)
-    # Нам нужны dim float32 значений = dim*4 байта. Генерим столько хеш-байтов.
-    needed_bytes = dim * 4
-    h = b""
-    counter = 0
-    while len(h) < needed_bytes:
-        h += hashlib.sha256(f"{text}#{counter}".encode("utf-8")).digest()
-        counter += 1
-    # Интерпретируем первые dim*4 байтов КАК dim float32 значений
-    arr = np.frombuffer(h[:needed_bytes], dtype=np.float32).copy()
-    # На случай если dim не подошёл (маловато байтов) — берём первые dim
-    if len(arr) != dim:
-        # fallback: интерпретируем как uint8 и берём dim элементов
-        arr = np.frombuffer(h[:needed_bytes], dtype=np.uint8).astype(np.float32)[:dim]
-    # Нормализуем: subtract mean, divide by L2 (для совместимости с IndexFlatIP)
-    arr = arr - arr.mean()
-    norm = np.linalg.norm(arr)
+    # Генерируем dim независимых значений в [0, 1)
+    values = np.zeros(dim, dtype=np.float64)
+    for i in range(dim):
+        h = int(hashlib.sha256(f"{text}#{i}".encode("utf-8")).hexdigest()[:16], 16)
+        values[i] = (h % 10000) / 10000.0
+    # Центрируем вокруг 0 (subtract 0.5) и нормализуем L2
+    values = values - 0.5
+    norm = np.linalg.norm(values)
     if norm < 1e-9:
         return np.zeros(dim, dtype=np.float32)
-    arr = arr / norm
-    return arr.astype(np.float32)
+    values = values / norm
+    return values.astype(np.float32)
 
 
 class HashEmbedder:

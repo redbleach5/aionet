@@ -104,6 +104,11 @@ top_k            = 5
 forgetting_half_life_days = 7.0
 forgetting_min_importance = 0.05  # ниже этого порога запись удаляется при сборке мусора
 gc_interval_minutes = 60
+# Инкрементальный GC: soft-delete (быстро) выполняется каждые gc_interval_minutes.
+# Физическая перестройка FAISS-индекса (дорого) — только когда количество
+# soft-deleted достигает gc_rebuild_threshold. Это снижает нагрузку на больших
+# объёмах (десятки/сотни тысяч записей).
+gc_rebuild_threshold = 1000
 
 # -----------------------------------------------------------------------------
 # Инструменты / MCP. Брокер запускает каждый MCP-сервер как подпроцесс
@@ -139,7 +144,17 @@ name      = "browser"
 command   = "python"
 args      = ["-m", "tools.browser_server"]
 transport = "stdio"
-sandbox   = true
+# ВНИМАНИЕ: browser НЕ может работать в Docker-песочнице по двум причинам:
+#   1) Playwright требует ~300 МБ браузеров (chromium), не входят в образ
+#   2) Браузеру нужна сеть для доступа к URL'ам — sandbox.network_enabled=false
+#      сделает browser_navigate бесполезным.
+# Поэтому browser запускается на хосте (sandbox=false). Для изоляции можно:
+#   * Запустить отдельный Docker-контейнер с Playwright+chromium и сетью
+#     (отдельный образ, не aionet-toolbox)
+#   * Использовать стратегию "headless browser service" через MCP-over-HTTP
+#     (например, browserless.io)
+# См. docs/DEPLOYMENT.md — секция "Browser isolation trade-offs".
+sandbox   = false
 
 # -----------------------------------------------------------------------------
 # Безопасность / песочница.

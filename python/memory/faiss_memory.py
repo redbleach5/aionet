@@ -56,6 +56,11 @@ class FaissMemoryStore(MemoryStore):
         self._init_db()
         self._last_gc = 0.0
         self._gc_interval = float(mcfg.get("gc_interval_minutes", 60)) * 60
+        # Инкрементальный GC: soft-delete сразу, физическая перестройка индекса
+        # только при достижении порога удалённых записей.
+        # Это снижает нагрузку на больших объёмах (десятки/сотни тысяч записей).
+        self._gc_rebuild_threshold = int(mcfg.get("gc_rebuild_threshold", 1000))
+        self._deleted_count = 0  # кэш количества soft-deleted
 
     # ------------------------------------------------------------------
     # Инициализация
@@ -82,13 +87,32 @@ class FaissMemoryStore(MemoryStore):
                 last_accessed INTEGER NOT NULL,
                 access_count INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
-                faiss_idx    INTEGER NOT NULL
+                faiss_idx    INTEGER NOT NULL,
+                deleted      INTEGER NOT NULL DEFAULT 0,
+                deleted_at   INTEGER
             )
         """)
+        # Миграция: добавляем колонки deleted/deleted_at если их нет (старые БД)
+        try:
+            self._db.execute("ALTER TABLE memories ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # колонка уже есть
+        try:
+            self._db.execute("ALTER TABLE memories ADD COLUMN deleted_at INTEGER")
+        except sqlite3.OperationalError:
+            pass
         self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_session ON memories(session_id)
         """)
+        self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_deleted ON memories(deleted)
+        """)
         self._db.commit()
+        # Считаем soft-deleted для инкрементального GC
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM memories WHERE deleted=1"
+        ).fetchone()
+        self._deleted_count = row[0] if row else 0
 
     def _get_embedder(self):
         if self._embedder is None:
@@ -161,14 +185,24 @@ class FaissMemoryStore(MemoryStore):
                     semantic_scores[idx] = float(score)
 
             # 2) Грузим метаданные всех кандидатов (по faiss_idx)
+            #    Фильтруем: deleted=0 (не soft-deleted) И session_id (если задан).
+            #    SQL pre-filter гарантирует, что записи из другой сессии
+            #    физически не попадут в результаты — даже если бы их векторы
+            #    были близки. Это архитектурная изоляция чатов.
             if not semantic_scores:
                 return []
             placeholders = ",".join("?" * len(semantic_scores))
+            params: list = list(semantic_scores.keys())
+            session_clause = ""
+            if session_id is not None:
+                session_clause = " AND session_id=?"
+                params.append(session_id)
             rows = self._db.execute(
                 f"SELECT id, session_id, text, importance, created_at, "
-                f"last_accessed, access_count, metadata_json, faiss_idx "
-                f"FROM memories WHERE faiss_idx IN ({placeholders})",
-                tuple(semantic_scores.keys()),
+                f"last_accessed, access_count, metadata_json, faiss_idx, deleted "
+                f"FROM memories WHERE faiss_idx IN ({placeholders}) "
+                f"AND deleted=0{session_clause}",
+                tuple(params),
             ).fetchall()
 
             now_ms = int(time.time() * 1000)
@@ -177,7 +211,7 @@ class FaissMemoryStore(MemoryStore):
             records: list[MemoryRecord] = []
             for r in rows:
                 (rid, sid, rtext, importance, created, last_acc,
-                 count, meta_json, faiss_idx) = r
+                 count, meta_json, faiss_idx, _deleted) = r
                 # SEMANTIC
                 s_sem = semantic_scores.get(faiss_idx, 0.0)
                 # RECENCY: exp(-days / half_life)
@@ -193,10 +227,8 @@ class FaissMemoryStore(MemoryStore):
                     score += self.channel_weights.get("recency", 0.25) * s_rec
                 if "frequency" in chans:
                     score += self.channel_weights.get("frequency", 0.15) * s_freq
-                # Фильтр по session_id (если задан)
-                if session_id is not None and sid != session_id:
-                    # Можно ослабить: понижать score, но не исключать.
-                    score *= 0.3
+                # Session_id уже отфильтрован в SQL pre-filter выше —
+                # здесь все записи гарантированно из нужной сессии (если задана).
                 records.append(MemoryRecord(
                     id=rid, text=rtext, score=score,
                     importance=importance, created_at=created,
@@ -231,6 +263,9 @@ class FaissMemoryStore(MemoryStore):
             return self._gc(now_ms, session_id)
 
     def _maybe_gc(self, now_ms: int) -> None:
+        """Периодически запускает GC (soft-delete). Перестройка индекса —
+        только при достижении порога _gc_rebuild_threshold удалённых записей.
+        """
         if now_ms - self._last_gc < self._gc_interval:
             return
         self._last_gc = now_ms
@@ -240,35 +275,70 @@ class FaissMemoryStore(MemoryStore):
             log.exception("GC failed")
 
     def _gc(self, now_ms: int, session_id: str | None) -> int:
-        """Удаляет записи с importance < min после применения кривой забывания."""
+        """Инкрементальный GC:
+
+        1) Soft-delete: помечаем записи с importance < min как deleted=1
+           (быстро, O(N) SQL, не трогает FAISS)
+        2) Если количество soft-deleted >= threshold — физически удаляем
+           из SQLite и перестраиваем FAISS-индекс (дорого, но редко)
+        3) Если session_id задан — GC только для этой сессии (принудительный)
+        """
+        # 1) Находим кандидатов на удаление (только не удалённые)
         rows = self._db.execute(
-            "SELECT id, importance, created_at, faiss_idx FROM memories"
-            + (" WHERE session_id=?" if session_id else ""),
+            "SELECT id, importance, created_at FROM memories "
+            "WHERE deleted=0"
+            + (" AND session_id=?" if session_id else ""),
             ((session_id,) if session_id else ()),
         ).fetchall()
-        to_delete: list[str] = []
-        for rid, imp, created, faiss_idx in rows:
+        to_soft_delete: list[str] = []
+        for rid, imp, created in rows:
             days = max((now_ms - created) / 86_400_000.0, 0.0)
             eff_imp = float(imp) * math.exp(-days / max(self.half_life_days, 1e-3))
             if eff_imp < self.min_importance:
-                to_delete.append(rid)
-        if not to_delete:
+                to_soft_delete.append(rid)
+        if not to_soft_delete:
             return 0
-        placeholders = ",".join("?" * len(to_delete))
+        # Soft-delete: помечаем deleted=1, ставим deleted_at
+        placeholders = ",".join("?" * len(to_soft_delete))
         self._db.execute(
-            f"DELETE FROM memories WHERE id IN ({placeholders})",
-            tuple(to_delete),
+            f"UPDATE memories SET deleted=1, deleted_at=? WHERE id IN ({placeholders})",
+            (now_ms, *to_soft_delete),
         )
         self._db.commit()
-        log.info("GC deleted %d memories", len(to_delete))
-        # Перестраиваем FAISS-индекс без удалённых векторов.
-        self._rebuild_index()
-        return len(to_delete)
+        self._deleted_count += len(to_soft_delete)
+        log.info("GC soft-deleted %d memories (total soft-deleted: %d, threshold: %d)",
+                 len(to_soft_delete), self._deleted_count, self._gc_rebuild_threshold)
+
+        # 2) Если накопилось много soft-deleted — физическая перестройка
+        if self._deleted_count >= self._gc_rebuild_threshold:
+            log.info("GC threshold reached (%d >= %d), rebuilding FAISS index...",
+                     self._deleted_count, self._gc_rebuild_threshold)
+            self._rebuild_index()
+        # Принудительный GC по session_id — тоже перестраивает (маловероятно, но безопасно)
+        elif session_id is not None and len(to_soft_delete) > 0:
+            # Если пользователь явно попросил forget(session_id) — удаляем физически
+            log.info("forced GC for session %s, rebuilding index", session_id[:16])
+            self._rebuild_index()
+        return len(to_soft_delete)
 
     def _rebuild_index(self) -> None:
-        """Перестраивает индекс из оставшихся записей (IndexFlatIP не поддерживает удаление)."""
+        """Перестраивает индекс из активных (не deleted) записей.
+
+        IndexFlatIP не поддерживает удаление векторов, поэтому:
+          1) Удаляем все deleted=1 записи из SQLite
+          2) Перестраиваем FAISS из оставшихся (deleted=0)
+          3) Сбрасываем счётчик _deleted_count
+        """
+        # Физически удаляем soft-deleted
+        deleted_count = self._db.execute(
+            "DELETE FROM memories WHERE deleted=1"
+        ).rowcount
+        self._db.commit()
+        log.info("physically removed %d soft-deleted records", deleted_count)
+
+        # Перестраиваем FAISS из активных записей
         rows = self._db.execute(
-            "SELECT id, text FROM memories ORDER BY faiss_idx"
+            "SELECT id, text FROM memories WHERE deleted=0 ORDER BY faiss_idx"
         ).fetchall()
         if not rows:
             self._index = self._faiss.IndexFlatIP(self.embedding_dim)
@@ -283,6 +353,7 @@ class FaissMemoryStore(MemoryStore):
                     (new_idx, rid),
                 )
             self._db.commit()
+        self._deleted_count = 0  # сбрасываем счётчик после rebuild
         self._maybe_save_index()
 
     def _maybe_save_index(self) -> None:
@@ -296,13 +367,22 @@ class FaissMemoryStore(MemoryStore):
     # ------------------------------------------------------------------
     def stats(self) -> dict[str, str]:
         with self._lock:
-            n = self._db.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            n_active = self._db.execute(
+                "SELECT COUNT(*) FROM memories WHERE deleted=0"
+            ).fetchone()[0]
+            n_deleted = self._db.execute(
+                "SELECT COUNT(*) FROM memories WHERE deleted=1"
+            ).fetchone()[0]
             by_session = self._db.execute(
-                "SELECT session_id, COUNT(*) FROM memories GROUP BY session_id"
+                "SELECT session_id, COUNT(*) FROM memories WHERE deleted=0 "
+                "GROUP BY session_id"
             ).fetchall()
             return {
-                "total": str(n),
+                "total": str(n_active),
+                "soft_deleted": str(n_deleted),
                 "faiss_total": str(self._index.ntotal),
+                "gc_rebuild_threshold": str(self._gc_rebuild_threshold),
+                "gc_pending_rebuild": str(max(0, self._gc_rebuild_threshold - n_deleted)),
                 "sessions": ";".join(f"{sid}:{cnt}" for sid, cnt in by_session),
                 "embedding_dim": str(self.embedding_dim),
                 "embedding_model": self.embedding_model_name,

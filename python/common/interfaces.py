@@ -121,8 +121,94 @@ class SandboxResult:
     ok: bool
 
 
+# =============================================================================
+# Sandbox Policy — точка расширения для MXC/OpenShell
+# =============================================================================
+@dataclass
+class SandboxPolicy:
+    """Декларативное описание политик песочницы.
+
+    Унифицирует конфигурацию для DockerSandbox / MXCSandbox / OpenShell.
+    Реальные MXC/OpenShell принимают YAML/JSON-политики на уровне ядра;
+    этот класс — их Python-представление. Метод Sandbox.apply_policy()
+    конвертирует его в формат, понятный конкретной реализации.
+
+    Поля:
+      seccomp_profile: путь к seccomp JSON (Docker) или имя встроенной политики MXC
+      apparmor_profile: имя AppArmor-профиля (Docker/Linux)
+      yaml_policy: путь к YAML-файлу OpenShell-стиля (для MXCSandbox)
+      network: список разрешённых хостов/портов; пустой = no-network
+      fs_read: список разрешённых для чтения путей
+      fs_write: список разрешённых для записи путей
+      syscalls_allow: whitelist syscall'ов (для seccomp)
+      syscalls_deny: blacklist syscall'ов
+      capabilities: список Linux capabilities (CAP_NET_BIND_SERVICE и т.п.)
+      env: переменные окружения, передаваемые в песочницу
+      memory_limit_mb: лимит памяти
+      cpu_quota_percent: лимит CPU (0..100)
+      pid_limit: max процессов внутри песочницы
+    """
+    seccomp_profile: str | None = None
+    apparmor_profile: str | None = None
+    yaml_policy: str | None = None
+    network: list[str] = field(default_factory=list)  # [] = no-network
+    fs_read: list[str] = field(default_factory=list)
+    fs_write: list[str] = field(default_factory=list)
+    syscalls_allow: list[str] = field(default_factory=list)
+    syscalls_deny: list[str] = field(default_factory=list)
+    capabilities: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    memory_limit_mb: int = 512
+    cpu_quota_percent: int = 50
+    pid_limit: int = 64
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "SandboxPolicy":
+        """Создаёт политику из dict (например, из YAML/JSON-конфига)."""
+        return cls(
+            seccomp_profile=d.get("seccomp_profile"),
+            apparmor_profile=d.get("apparmor_profile"),
+            yaml_policy=d.get("yaml_policy"),
+            network=list(d.get("network", [])),
+            fs_read=list(d.get("fs_read", [])),
+            fs_write=list(d.get("fs_write", [])),
+            syscalls_allow=list(d.get("syscalls_allow", [])),
+            syscalls_deny=list(d.get("syscalls_deny", [])),
+            capabilities=list(d.get("capabilities", [])),
+            env=dict(d.get("env", {})),
+            memory_limit_mb=int(d.get("memory_limit_mb", 512)),
+            cpu_quota_percent=int(d.get("cpu_quota_percent", 50)),
+            pid_limit=int(d.get("pid_limit", 64)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seccomp_profile": self.seccomp_profile,
+            "apparmor_profile": self.apparmor_profile,
+            "yaml_policy": self.yaml_policy,
+            "network": list(self.network),
+            "fs_read": list(self.fs_read),
+            "fs_write": list(self.fs_write),
+            "syscalls_allow": list(self.syscalls_allow),
+            "syscalls_deny": list(self.syscalls_deny),
+            "capabilities": list(self.capabilities),
+            "env": dict(self.env),
+            "memory_limit_mb": self.memory_limit_mb,
+            "cpu_quota_percent": self.cpu_quota_percent,
+            "pid_limit": self.pid_limit,
+        }
+
+
 class Sandbox(abc.ABC):
-    """Изоляция вызова инструментов. Реализации: DockerSandbox, MXCSandbox, NoneSandbox."""
+    """Изоляция вызова инструментов.
+
+    Реализации: DockerSandbox (текущая), MXCSandbox (заглушка под MS Execution
+    Containers), NoneSandbox (dev без изоляции).
+
+    Расширенный контракт (rev 2): поддержка декларативных политик через
+    apply_policy(). Это позволяет передавать YAML-политики OpenShell-стиля
+    в MXCSandbox, не меняя остальной код.
+    """
 
     @abc.abstractmethod
     def run(self, *,
@@ -131,7 +217,31 @@ class Sandbox(abc.ABC):
             network: bool = False,
             timeout_s: int = 30,
             env: Mapping[str, str] | None = None) -> SandboxResult:
-        """Запускает команду в изолированном окружении."""
+        """Запускает команду в изолированном окружении.
+
+        Если ранее был применён policy через apply_policy() — он имеет приоритет
+        над параметрами по умолчанию, но явные аргументы (network, env) могут
+        его переопределять для конкретного вызова.
+        """
+
+    def apply_policy(self, policy: SandboxPolicy | Mapping[str, Any]) -> None:
+        """Применяет декларативную политику к песочнице.
+
+        Реализация по умолчанию: сохраняет политику в self._policy.
+        Конкретные реализации (DockerSandbox, MXCSandbox) переопределяют
+        этот метод, чтобы сконвертировать политику в свой формат
+        (Docker security-opt, MXC YAML, OpenShell policy file).
+
+        Для NoneSandbox: политика игнорируется (dev-режим без изоляции).
+        """
+        if isinstance(policy, Mapping):
+            policy = SandboxPolicy.from_dict(policy)
+        self._policy = policy  # type: ignore[attr-defined]
+
+    @property
+    def policy(self) -> SandboxPolicy | None:
+        """Текущая применённая политика (или None, если не применялась)."""
+        return getattr(self, "_policy", None)
 
 
 # =============================================================================
