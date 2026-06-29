@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Generated protobuf
+proto/_gen/
+
+# Build artifacts
+rust/target/
+rust/frontend/node_modules/
+rust/frontend/dist/
+
+# Runtime data
+logs/
+data/
+workspace/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

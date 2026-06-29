@@ -1,0 +1,57 @@
+# AppArmor-профиль для контейнера-песочницы инструментов aionet.
+# Загружается на хосте:  apparmor_parser -r /etc/apparmor.d/aionet-toolbox
+# В Docker подключается через  --security-opt apparmor=aionet-toolbox
+
+#include <tunables/global>
+
+profile aionet-toolbox flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  # Запрет network по умолчанию; разрешаем только AF_UNIX/AF_LOCAL
+  network unix stream,
+  network unix dgram,
+  deny network raw,
+  deny network packet,
+  deny network inet,
+  deny network inet6,
+
+  # Рабочая директория (пробрасывается через -v) — полный доступ
+  /workspace/** rw,
+  /workspace/ rw,
+
+  # /tmp — rw, но без exec
+  /tmp/** rw,
+  deny /tmp/** mx,
+
+  # Системные директории — только чтение
+  /usr/** r,
+  /lib/** r,
+  /lib64/** r,
+  /etc/ld.so.cache r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/passwd r,
+  /etc/group r,
+  /dev/null rw,
+  /dev/zero rw,
+  /dev/urandom r,
+  /dev/random r,
+  /proc/** r,
+  /sys/** r,
+
+  # Запрет записи в системные пути
+  deny /etc/** wklx,
+  deny /usr/** wklx,
+  deny /bin/** wklx,
+  deny /sbin/** wklx,
+  deny /lib/** wklx,
+  deny /lib64/** wklx,
+  deny /root/** wklx,
+  deny /home/** wklx,
+
+  # Python-интерпретатор
+  /usr/bin/python3* rix,
+  /usr/local/bin/python3* rix,
+  /usr/bin/pip3* rix,
+}

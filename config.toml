@@ -1,0 +1,149 @@
+# =============================================================================
+# Конфигурация локального AI-агента "Aionet".
+# Все модули читают ОДИН файл — он же источник правды для портов ZeroMQ,
+# путей к моделям и политик безопасности.
+# =============================================================================
+
+[system]
+name        = "aionet"
+version     = "0.1.0"
+environment = "dev"   # dev | prod
+log_level   = "INFO"  # DEBUG | INFO | WARNING | ERROR
+log_file    = "./logs/aionet.log"
+
+# -----------------------------------------------------------------------------
+# ZeroMQ endpoint'ы. Каждый сервис слушает свой REP-порт; агент-оркестратор
+# использует REQ для синхронных запросов и DEALER для асинхронных.
+# -----------------------------------------------------------------------------
+[zmq]
+agent_core_endpoint  = "tcp://127.0.0.1:5550"   # REP: приём запросов от Tauri/UI
+llm_engine_endpoint  = "tcp://127.0.0.1:5551"   # REP: LLM-инференс
+memory_endpoint      = "tcp://127.0.0.1:5552"   # REP: память
+tools_endpoint       = "tcp://127.0.0.1:5553"   # REP: брокер MCP-инструментов
+avatar_cmd_endpoint  = "tcp://127.0.0.1:5554"   # PUB: команды аватару
+avatar_evt_endpoint  = "tcp://127.0.0.1:5555"   # SUB: события от аватара
+healthcheck_endpoint = "tcp://127.0.0.1:5559"   # REP: /health для всех сервисов
+zmq_linger_ms        = 1000
+zmq_rcvtimeo_ms      = 30000
+
+# -----------------------------------------------------------------------------
+# LLM Engine. Приоритет: Aion 1.0 Plan; если не установлен — Mistral 7B;
+# если и его нет — Llama 3.1 8B. Все три идут через Ollama.
+# -----------------------------------------------------------------------------
+[llm]
+provider       = "ollama"            # ollama | llama_cpp | openai_compatible
+ollama_host    = "http://127.0.0.1:11434"
+# Список пробуется по порядку до первого установленного.
+candidate_models = [
+  "aion-plan-1.0",
+  "mistral:7b-instruct",
+  "llama3.1:8b-instruct",
+]
+fallback_model = "mistral:7b-instruct"
+temperature    = 0.3
+max_tokens     = 2048
+timeout_s      = 120
+system_prompt_plan = """
+Ты — Aion, локальный AI-агент-планировщик. Тебе доступен набор MCP-инструментов.
+Разбей задачу пользователя на шаги, при необходимости вызови инструменты через tool_calls,
+после получения результатов сформулируй финальный ответ на русском языке.
+"""
+system_prompt_instruct = """
+Ты — Aion, ассистент пользователя. Отвечай кратко и по делу на русском языке.
+Если нужен доступ к файлам/шеллу/пакетам — используй tool_calls.
+"""
+
+# -----------------------------------------------------------------------------
+# Память. FAISS-индекс + SQLite-метаданные; кривая забывания Эббингауза.
+# -----------------------------------------------------------------------------
+[memory]
+backend          = "faiss"           # faiss | chroma
+index_path       = "./data/memory.faiss"
+meta_db_path     = "./data/memory.sqlite"
+embedding_model  = "all-MiniLM-L6-v2"  # sentence-transformers (локально)
+embedding_dim    = 384
+# Стратегии многоканального извлечения. Все каналы ранжируют независимо,
+# потом скоры сливаются взвешенной суммой.
+channels = ["semantic", "recency", "frequency"]
+channel_weights = { semantic = 0.6, recency = 0.25, frequency = 0.15 }
+top_k            = 5
+# Кривая забывания: importance * exp(-days / half_life_days)
+forgetting_half_life_days = 7.0
+forgetting_min_importance = 0.05  # ниже этого порога запись удаляется при сборке мусора
+gc_interval_minutes = 60
+
+# -----------------------------------------------------------------------------
+# Инструменты / MCP. Брокер запускает каждый MCP-сервер как подпроцесс
+# и общается с ним по stdio (стандартный MCP-транспорт).
+# -----------------------------------------------------------------------------
+[tools]
+broker_concurrency = 4
+default_timeout_ms = 30000
+[[tools.servers]]
+name      = "shell"
+command   = "python"
+args      = ["-m", "tools.shell_server"]
+transport = "stdio"
+sandbox   = true   # запуск внутри Docker-контейнера (см. [security])
+
+[[tools.servers]]
+name      = "filesystem"
+command   = "python"
+args      = ["-m", "tools.fs_server"]
+transport = "stdio"
+sandbox   = true
+allowed_roots = ["./workspace"]
+
+[[tools.servers]]
+name      = "winget"
+command   = "python"
+args      = ["-m", "tools.winget_server"]
+transport = "stdio"
+sandbox   = false  # winget требует привилегий — гоняем на хосте
+
+[[tools.servers]]
+name      = "browser"
+command   = "python"
+args      = ["-m", "tools.browser_server"]
+transport = "stdio"
+sandbox   = true
+
+# -----------------------------------------------------------------------------
+# Безопасность / песочница.
+# MXC и NVIDIA OpenShell на текущий момент недоступны как публичные релизы —
+# используем Docker с seccomp+AppArmor и непривилегированным пользователем.
+# -----------------------------------------------------------------------------
+[security]
+backend            = "docker"   # mxc | openshell | docker | none
+sandbox_image      = "aionet-toolbox:latest"
+seccomp_profile    = "./docker/seccomp-profile.json"
+apparmor_profile   = "aionet-toolbox"
+run_as_user        = "1000:1000"
+network_enabled    = false
+read_only_rootfs   = true
+memory_limit_mb    = 512
+cpu_quota_percent  = 50
+mount_workspace    = "/workspace"
+extra_allowed_caps = []  # минимально-необходимые capabilities
+
+# -----------------------------------------------------------------------------
+# Аватар. Desktop Homunculus недоступен как публичный релиз — используем
+# HTML5/Three.js-аватар в Tauri-окне, управляемый через WebSocket-мост.
+# -----------------------------------------------------------------------------
+[avatar]
+backend         = "html5_threejs"   # homunculus | html5_threejs
+ws_listen_host  = "127.0.0.1"
+ws_listen_port  = 8765
+default_emotion = "neutral"
+tts_backend     = "none"            # none | coqui | silero | edge_tts
+
+# -----------------------------------------------------------------------------
+# Tauri / UI.
+# -----------------------------------------------------------------------------
+[ui]
+title           = "Aionet — Local AI Agent"
+width           = 1280
+height          = 800
+avatar_zone_w   = 480
+chat_zone_w     = 800
+theme           = "dark"            # dark | light

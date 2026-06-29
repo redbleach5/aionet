@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aionet — Local AI Agent</title>
+    <style>
+      :root {
+        --bg: #0e0f13;
+        --bg-elev: #181a21;
+        --fg: #e6e7ee;
+        --fg-muted: #8b8d99;
+        --accent: #7c5cff;
+        --accent-soft: #7c5cff33;
+        --border: #2a2c36;
+        --ok: #4ade80;
+        --err: #f87171;
+      }
+      * { box-sizing: border-box; }
+      html, body, #root { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        overflow: hidden;
+      }
+      button, input, textarea {
+        font-family: inherit;
+        font-size: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+# Минимальный образ песочницы для MCP-серверов инструментов.
+# Только Python + системные утилиты. Никаких компиляторов, никакого sudo.
+FROM python:3.12-slim AS base
+
+# Непривилегированный пользователь (UID/GID 1000 — стандарт для user namespace)
+RUN groupadd --gid 1000 aionet \
+ && useradd  --uid 1000 --gid 1000 --create-home --shell /bin/bash aionet
+
+# Только необходимые системные пакеты
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl file less tree jq \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Минимальный набор Python-библиотек для tool-серверов
+COPY python/requirements.tools.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Копируем только модули tools/ и common/ — остальное агенту не нужно
+COPY python/tools  /app/tools
+COPY python/common /app/common
+COPY proto         /app/proto
+ENV PYTHONPATH=/app:/app/proto/_gen
+
+# Read-only rootfs обеспечивается флагом --read-only при запуске; /tmp делаем tmpfs
+VOLUME ["/workspace", "/tmp"]
+USER aionet
+
+# По умолчанию запускаем shell-server; конкретный сервер задаётся через cmd
+CMD ["python", "-m", "tools.shell_server"]

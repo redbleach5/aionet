@@ -1,0 +1,14 @@
+# Зависимости Python-части микросервиса.
+# Версии — минимально-совместимые, чтобы не блокировать апгрейды.
+pyzmq>=25.0
+protobuf>=4.25
+grpcio-tools>=1.60
+tomli>=2.0; python_version < "3.11"
+requests>=2.31
+sentence-transformers>=2.5
+faiss-cpu>=1.7.4
+numpy>=1.24
+mcp>=0.3.0            # Model Context Protocol SDK
+docker>=7.0           # Для DockerSandbox
+tenacity>=8.2         # retry-логика в LLM-клиенте
+pydantic>=2.5

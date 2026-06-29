@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+package aionet.v1;
+
+// =============================================================================
+// Единая протокольная схема микросервиса локального AI-агента.
+// Используется во ВСЕХ ZeroMQ-каналах (REQ/REP, PUB/SUB, DEALER/ROUTER).
+// Каждое сообщение оборачивается в Envelope, чтобы сохранять trace_id и
+// routing-метаданные при сквозной трассировке запросов.
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Верхний конверт. Поля `trace_id` и `span_id` заполняет инициатор запроса;
+// промежуточные сервисы обязаны пробрасывать их без изменений.
+// ---------------------------------------------------------------------------
+message Envelope {
+  string trace_id   = 1;
+  string span_id    = 2;
+  string source     = 3;  // имя сервиса-отправителя ("agent_core", "llm_engine"...)
+  string target     = 4;  // имя сервиса-получателя
+  uint64 timestamp  = 5;  // unix-millis
+  bytes  payload    = 6;  // сериализованное тело одного из нижеперечисленных сообщений
+  PayloadType type  = 7;
+}
+
+enum PayloadType {
+  PAYLOAD_UNSPECIFIED  = 0;
+  PAYLOAD_AGENT_REQUEST  = 1;
+  PAYLOAD_AGENT_RESPONSE = 2;
+  PAYLOAD_LLM_CALL       = 3;
+  PAYLOAD_LLM_RESULT     = 4;
+  PAYLOAD_MEMORY_OP      = 5;
+  PAYLOAD_MEMORY_RESULT  = 6;
+  PAYLOAD_TOOL_CALL      = 7;
+  PAYLOAD_TOOL_RESULT    = 8;
+  PAYLOAD_AVATAR_CMD     = 9;
+  PAYLOAD_AVATAR_EVENT   = 10;
+  PAYLOAD_ERROR          = 99;
+}
+
+// ---------------------------------------------------------------------------
+// Agent Core
+// ---------------------------------------------------------------------------
+message AgentRequest {
+  string session_id   = 1;
+  string user_text    = 2;
+  map<string, string> metadata = 3;
+}
+
+message AgentResponse {
+  string session_id    = 1;
+  string final_text    = 2;
+  repeated ToolCallTrace tool_calls = 3;  // трейс вызовов инструментов для UI
+  uint32 tokens_used   = 4;
+}
+
+message ToolCallTrace {
+  string tool_name   = 1;
+  string arguments   = 2;  // JSON-строка аргументов
+  string result      = 3;  // JSON-строка результата
+  uint32 duration_ms = 4;
+  bool   ok          = 5;
+}
+
+// ---------------------------------------------------------------------------
+// LLM Engine
+// ---------------------------------------------------------------------------
+message LLMCall {
+  string model         = 1;   // "aion-plan-1.0", "mistral:7b", "llama3.1:8b"
+  string system_prompt = 2;
+  repeated ChatMessage messages = 3;
+  float  temperature   = 4;
+  uint32 max_tokens    = 5;
+  repeated ToolSchema  tools = 6;  // если есть — движок может вернуть tool_calls
+  bool   stream        = 7;       // пока не используется, зарезервировано
+}
+
+message LLMResult {
+  string content            = 1;
+  repeated ToolCall tool_calls = 2;
+  uint32 prompt_tokens     = 3;
+  uint32 completion_tokens = 4;
+  string model_used        = 5;
+}
+
+message ChatMessage {
+  enum Role { USER = 0; ASSISTANT = 1; SYSTEM = 2; TOOL = 3; }
+  Role   role    = 1;
+  string content = 2;
+  string tool_call_id = 3;  // для role=TOOL — идентификатор вызванного инструмента
+  string name         = 4;  // для role=TOOL — имя инструмента
+}
+
+message ToolSchema {
+  string name        = 1;
+  string description = 2;
+  string parameters_json = 3;  // JSON-Schema параметров, сериализованная строкой
+}
+
+message ToolCall {
+  string id    = 1;
+  string name  = 2;
+  string arguments_json = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+message MemoryOp {
+  enum Op { STORE = 0; RETRIEVE = 1; FORGET = 2; STATS = 3; }
+  Op op = 1;
+  string session_id = 2;
+  string text       = 3;  // для STORE
+  map<string, string> metadata = 4;
+  uint32 top_k      = 5;  // для RETRIEVE
+  repeated string channels = 6;  // ["semantic","recency","frequency"]; [] = все
+}
+
+message MemoryRecord {
+  string id         = 1;
+  string text       = 2;
+  float  score      = 3;
+  float  importance = 4;
+  uint64 created_at = 5;
+  uint64 last_accessed = 6;
+  uint32 access_count  = 7;
+  map<string, string> metadata = 8;
+}
+
+message MemoryResult {
+  bool   ok = 1;
+  repeated MemoryRecord records = 2;  // для RETRIEVE
+  string error = 3;
+  map<string, string> stats = 4;  // для STATS
+}
+
+// ---------------------------------------------------------------------------
+// Tools (MCP-bridge)
+// ---------------------------------------------------------------------------
+message ToolCallMessage {
+  string tool_name = 1;
+  string arguments_json = 2;
+  uint32 timeout_ms = 3;
+}
+
+message ToolResultMessage {
+  bool   ok = 1;
+  string output_json = 2;  // структурированный результат инструмента
+  string error = 3;
+  uint32 duration_ms = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Avatar
+// ---------------------------------------------------------------------------
+message AvatarCommand {
+  enum Action {
+    SPEAK = 0;        // озвучить текст + анимация губ
+    EMOTE = 1;        // эмоция (happy, sad, thinking, neutral)
+    GESTURE = 2;      // жест
+    IDLE = 3;         // вернуться в покой
+    LOOK_AT = 4;      // направление взгляда (x,y,z в target)
+  }
+  Action action = 1;
+  string text   = 2;  // для SPEAK
+  string emotion = 3; // для EMOTE
+  string gesture = 4; // для GESTURE
+  float  x = 5; float y = 6; float z = 7;  // для LOOK_AT
+}
+
+message AvatarEvent {
+  string event = 1;  // "speaking_started", "speaking_done", "user_appeared"
+  map<string, string> data = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Универсальная ошибка
+// ---------------------------------------------------------------------------
+message ErrorPayload {
+  string code    = 1;  // "TOOL_NOT_FOUND", "LLM_TIMEOUT", ...
+  string message = 2;
+  string stacktrace = 3;
+}
