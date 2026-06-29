@@ -129,7 +129,7 @@ class ZMQClient:
         if self._sock is None or self._sock.closed:
             s = self._ctx.socket(zmq.REQ)
             s.setsockopt(zmq.LINGER, self._linger)
-            s.setsockopt(zmq.RCVTIMEO, self._rcvtimeo_ms)
+            s.setsockopt(zmq.RCVTIMEO, self._rcvtimeo)
             s.connect(self.endpoint)
             self._sock = s
         return self._sock

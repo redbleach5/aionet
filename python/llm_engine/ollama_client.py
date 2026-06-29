@@ -167,15 +167,25 @@ class LLMEngineService:
 
     def handle(self, env, payload) -> bytes:
         from common.proto import build_payload, PayloadType
-        messages = [
-            ChatMessage(
-                role=m.role if isinstance(m.role, str) else m.role.Name.lower(),
+        # role — enum в proto (USER=0, ASSISTANT=1, SYSTEM=2, TOOL=3)
+        # m.role может быть int (значение enum) или самим enum'ом.
+        ROLE_NAMES = {0: "user", 1: "assistant", 2: "system", 3: "tool"}
+        messages = []
+        for m in payload.messages:
+            role_val = m.role
+            # protobuf enum: если это int-like, берём числовое значение
+            try:
+                role_int = int(role_val)
+                role_name = ROLE_NAMES.get(role_int, "user")
+            except (TypeError, ValueError):
+                # уже строка
+                role_name = str(role_val) if isinstance(role_val, str) else "user"
+            messages.append(ChatMessage(
+                role=role_name,
                 content=m.content,
                 tool_call_id=m.tool_call_id or None,
                 name=m.name or None,
-            )
-            for m in payload.messages
-        ]
+            ))
         tools = [
             ToolSchema(name=t.name, description=t.description,
                        parameters_json=t.parameters_json)

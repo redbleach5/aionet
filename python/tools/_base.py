@@ -1,20 +1,19 @@
 """Общий базовый класс для всех MCP-серверов инструментов.
 
-Использует официальный MCP Python SDK (`pip install mcp`). Каждый инструмент
-наследуется от BaseToolServer и регистрирует свои методы через @mcp.tool().
+Использует FastMCP из официального MCP Python SDK — даёт декоратор @mcp.tool()
+для регистрации функций. stdio-транспорт под капотом.
 
-MCP-протокол работает по stdio: stdio_client → ServerSession. Мы предоставляем
-один класс-раннер, общий для всех tool-серверов.
+Каждый инструмент наследуется от BaseToolServer и регистрирует свои методы
+через декоратор @self.mcp.tool() в методе _register_tools().
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import sys
-from typing import Any, Callable
+from typing import Any
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.fastmcp import FastMCP
 
 from common.logging import get_logger
 
@@ -33,7 +32,7 @@ class BaseToolServer:
     name: str = "base"
 
     def __init__(self):
-        self.mcp = Server(self.name)
+        self.mcp = FastMCP(self.name)
         self._register_tools()
 
     def _register_tools(self) -> None:
@@ -41,8 +40,21 @@ class BaseToolServer:
         raise NotImplementedError
 
     async def run(self) -> None:
-        async with stdio_server() as (read, write):
-            await self.mcp.run(read, write, self.mcp.create_initialization_options())
+        # FastMCP.run_stdio_async() может выбрасывать BrokenPipeError
+        # когда родительский процесс закрывает stdin/stdout. Это нормально
+        # при shutdown — логируем как info, не как error.
+        try:
+            await self.mcp.run_stdio_async()
+        except (BrokenPipeError, ConnectionResetError):
+            log.info("MCP server '%s' stdio pipe closed", self.name)
+        except Exception as e:
+            # anyio оборачивает в ExceptionGroup — раскручиваем
+            eg = getattr(e, "exceptions", None)
+            if eg and all(isinstance(sub, (BrokenPipeError, ConnectionResetError))
+                         for sub in eg):
+                log.info("MCP server '%s' stdio pipe closed (exception group)", self.name)
+            else:
+                raise
 
 
 def _ok(**kwargs) -> str:

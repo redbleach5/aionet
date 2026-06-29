@@ -76,8 +76,8 @@ class AgentRuntime:
         """Возвращает callable(text) -> list[float] для semantic-loop детектора.
 
         Лучший вариант — использовать локальную sentence-transformers модель
-        прямо в agent_core (быстро, без IPC). Если она недоступна — None,
-        и semantic-loop сигнатура просто не сработает (non-fatal).
+        прямо в agent_core (быстро, без IPC). Если она недоступна — fallback
+        на HashEmbedder (для тестового окружения без torch).
         """
         try:
             from sentence_transformers import SentenceTransformer
@@ -88,9 +88,14 @@ class AgentRuntime:
                 return v.tolist()
             log.info("LoopDetector embed_fn ready (model=%s)", model_name)
             return embed
-        except Exception as e:
-            log.warning("sentence-transformers unavailable for semantic-loop: %s", e)
-            return None
+        except ImportError:
+            from common.embedder import make_embedder
+            embedder = make_embedder(self.cfg.memory.get("embedding_model", "all-MiniLM-L6-v2"))
+            def embed(text: str) -> list[float]:
+                v = embedder.encode(text, normalize_embeddings=True)
+                return v.tolist() if hasattr(v, "tolist") else list(v)
+            log.warning("LoopDetector using HashEmbedder fallback (test mode)")
+            return embed
 
     # ------------------------------------------------------------------
     # Точка входа: обработать AgentRequest.

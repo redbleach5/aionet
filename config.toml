@@ -35,6 +35,7 @@ provider       = "ollama"            # ollama | llama_cpp | openai_compatible
 ollama_host    = "http://127.0.0.1:11434"
 # Список пробуется по порядку до первого установленного.
 candidate_models = [
+  "mock:test-7b",
   "aion-plan-1.0",
   "mistral:7b-instruct",
   "llama3.1:8b-instruct",
@@ -124,7 +125,7 @@ command   = "python"
 args      = ["-m", "tools.fs_server"]
 transport = "stdio"
 sandbox   = true
-allowed_roots = ["./workspace"]
+allowed_roots = ["./workspace", "/home/z/my-project/local-ai-agent/workspace"]
 
 [[tools.servers]]
 name      = "winget"

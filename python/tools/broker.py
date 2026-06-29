@@ -4,15 +4,19 @@
 держит с ним постоянную сессию через MCP SDK и проксирует входящие ToolCallMessage
 от агента в нужный сервер.
 
-Это устраняет необходимость в Ollama-MCP Bridge / MCPHost — мы реализуем
-собственный лёгкий брокер.
+Ключевые архитектурные решения:
+  * stdio-MCP-сессии живут внутри постоянного asyncio event loop (отдельный поток)
+  * Инициализация сессии — ленивая: первый call_tool/list_tools поднимает её
+  * Падение одного MCP-сервера НЕ валит брокер — сессия помечается как failed,
+    повторный вызов пытается пересоздать
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import sys
+import threading
+import time
 import uuid
 from typing import Any
 
@@ -29,7 +33,12 @@ log = get_logger(__name__)
 
 
 class StdioMCPClient:
-    """Один поднятый stdio-MCP-сервер с ленивой инициализацией сессии."""
+    """Один поднятый stdio-MCP-сервер с ленивой инициализацией сессии.
+
+    Сессия создаётся при первом list_tools()/call_tool() и держится до
+    явного stop(). Если подпроцесс падает — сессия помечается broken,
+    следующий вызов пытается её пересоздать.
+    """
 
     def __init__(self, name: str, command: str, args: list[str],
                  env: dict[str, str] | None = None):
@@ -40,61 +49,38 @@ class StdioMCPClient:
         self._session: ClientSession | None = None
         self._ctx_stack: Any = None
         self._lock = asyncio.Lock()
+        self._broken = False
 
-    async def start(self) -> None:
-        if self._session is not None:
-            return
-        params = StdioServerParameters(
-            command=self.command, args=self.args,
-            env={**os.environ, **self.env},
-        )
-        # stdio_client — async context manager; открываем его вручную.
-        self._ctx_stack = stdio_client(params)
-        read, write = await self._ctx_stack.__aenter__()
-        self._session = ClientSession(read, write)
-        await self._session.__aenter__()
-        await self._session.initialize()
-        log.info("MCP server '%s' started: %s %s",
-                 self.name, self.command, " ".join(self.args))
+    async def _ensure_session(self) -> bool:
+        """Создаёт сессию, если её нет. Возвращает True если сессия готова."""
+        if self._session is not None and not self._broken:
+            return True
+        async with self._lock:
+            if self._session is not None and not self._broken:
+                return True
+            # Закрываем старую сломанную сессию
+            if self._broken:
+                await self._cleanup()
+                self._broken = False
+            try:
+                params = StdioServerParameters(
+                    command=self.command, args=self.args,
+                    env={**os.environ, **self.env},
+                )
+                self._ctx_stack = stdio_client(params)
+                read, write = await self._ctx_stack.__aenter__()
+                self._session = ClientSession(read, write)
+                await self._session.__aenter__()
+                await self._session.initialize()
+                log.info("MCP server '%s' session initialized", self.name)
+                return True
+            except Exception as e:
+                log.error("MCP server '%s' init failed: %s", self.name, e)
+                self._broken = True
+                await self._cleanup()
+                return False
 
-    async def list_tools(self) -> list[ToolSchema]:
-        await self.start()
-        res = await self._session.list_tools()
-        out: list[ToolSchema] = []
-        for t in res.tools:
-            # parameters — JSON-Schema в виде dict; сериализуем в строку.
-            schema_dict = t.inputSchema if isinstance(t.inputSchema, dict) \
-                else {"type": "object", "properties": {}}
-            out.append(ToolSchema(
-                name=f"{self.name}/{t.name}",
-                description=t.description or "",
-                parameters_json=json.dumps(schema_dict, ensure_ascii=False),
-            ))
-        return out
-
-    async def call_tool(self, tool_short: str, arguments: dict[str, Any]) -> ToolExecutionResult:
-        await self.start()
-        try:
-            res = await self._session.call_tool(tool_short, arguments)
-        except Exception as e:
-            return ToolExecutionResult(ok=False, output=None, error=str(e))
-        # res.content — список TextContent / ImageContent / ...
-        text_parts: list[str] = []
-        for c in res.content:
-            text = getattr(c, "text", None)
-            if text is not None:
-                text_parts.append(text)
-        out_str = "\n".join(text_parts) if text_parts else ""
-        try:
-            parsed = json.loads(out_str) if out_str else None
-        except json.JSONDecodeError:
-            parsed = out_str
-        return ToolExecutionResult(
-            ok=not res.isError, output=parsed if parsed is not None else out_str,
-            error="" if not res.isError else out_str,
-        )
-
-    async def stop(self) -> None:
+    async def _cleanup(self) -> None:
         if self._session is not None:
             try:
                 await self._session.__aexit__(None, None, None)
@@ -108,6 +94,56 @@ class StdioMCPClient:
                 pass
             self._ctx_stack = None
 
+    async def list_tools(self) -> list[ToolSchema]:
+        if not await self._ensure_session():
+            return []
+        try:
+            res = await self._session.list_tools()
+        except Exception as e:
+            log.warning("MCP '%s' list_tools failed: %s — marking broken", self.name, e)
+            self._broken = True
+            return []
+        out: list[ToolSchema] = []
+        for t in res.tools:
+            schema_dict = t.inputSchema if isinstance(t.inputSchema, dict) \
+                else {"type": "object", "properties": {}}
+            out.append(ToolSchema(
+                name=f"{self.name}/{t.name}",
+                description=t.description or "",
+                parameters_json=json.dumps(schema_dict, ensure_ascii=False),
+            ))
+        return out
+
+    async def call_tool(self, tool_short: str, arguments: dict[str, Any]) -> ToolExecutionResult:
+        if not await self._ensure_session():
+            return ToolExecutionResult(ok=False, output=None,
+                                        error=f"MCP server '{self.name}' unavailable")
+        try:
+            res = await self._session.call_tool(tool_short, arguments)
+        except Exception as e:
+            log.warning("MCP '%s' call_tool '%s' failed: %s — marking broken",
+                        self.name, tool_short, e)
+            self._broken = True
+            return ToolExecutionResult(ok=False, output=None, error=str(e))
+        text_parts: list[str] = []
+        for c in res.content:
+            text = getattr(c, "text", None)
+            if text is not None:
+                text_parts.append(text)
+        out_str = "\n".join(text_parts) if text_parts else ""
+        try:
+            parsed = json.loads(out_str) if out_str else None
+        except json.JSONDecodeError:
+            parsed = out_str
+        return ToolExecutionResult(
+            ok=not res.isError,
+            output=parsed if parsed is not None else out_str,
+            error="" if not res.isError else out_str,
+        )
+
+    async def stop(self) -> None:
+        await self._cleanup()
+
 
 class MCPBroker(ToolRunner):
     """Агрегирует все MCP-серверы. Вызовы от агента приходят через ZeroMQ REP."""
@@ -116,13 +152,19 @@ class MCPBroker(ToolRunner):
         self.cfg = cfg
         self._clients: dict[str, StdioMCPClient] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
         self._tools_cache: list[ToolSchema] | None = None
 
     # ------- lifecycle -------
     def start(self) -> None:
-        # Запускаем event-loop в фоне; ZeroMQ-handler будет планировать в него.
+        # Создаём event loop в отдельном потоке — он будет жить всё время брокера
         self._loop = asyncio.new_event_loop()
-        # Поднимаем все серверы синхронно (через run_until_complete).
+        self._loop_thread = threading.Thread(
+            target=self._run_loop, name="mcp-broker-loop", daemon=True,
+        )
+        self._loop_thread.start()
+
+        # Регистрируем клиентов (БЕЗ инициализации — она ленивая)
         for srv in self.cfg.tool_servers:
             env = {f"AIONET_{k.upper()}": str(v) for k, v in srv.items()
                    if isinstance(v, (str, int, bool, list))}
@@ -132,22 +174,28 @@ class MCPBroker(ToolRunner):
                 args=list(srv.get("args", [])),
                 env=env,
             )
-            try:
-                self._loop.run_until_complete(client.start())
-                self._clients[srv["name"]] = client
-            except Exception:
-                log.exception("failed to start MCP server '%s'", srv["name"])
+            self._clients[srv["name"]] = client
+            log.info("registered MCP client '%s' (lazy init)", srv["name"])
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
 
     def shutdown(self) -> None:
         if self._loop is None:
             return
-        for c in self._clients.values():
+        # Останавливаем всех клиентов в event-loop
+        for c in list(self._clients.values()):
             try:
-                self._loop.run_until_complete(c.stop())
+                fut = asyncio.run_coroutine_threadsafe(c.stop(), self._loop)
+                fut.result(timeout=3)
             except Exception:
                 pass
-        self._loop.close()
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop_thread:
+            self._loop_thread.join(timeout=3)
         self._loop = None
+        self._loop_thread = None
 
     # ------- ToolRunner impl -------
     def list_tools(self) -> list[ToolSchema]:
@@ -156,15 +204,15 @@ class MCPBroker(ToolRunner):
         out: list[ToolSchema] = []
         for c in self._clients.values():
             try:
-                tools = self._loop.run_until_complete(c.list_tools())
+                fut = asyncio.run_coroutine_threadsafe(c.list_tools(), self._loop)
+                tools = fut.result(timeout=10)
                 out.extend(tools)
-            except Exception:
-                log.exception("list_tools failed for '%s'", c.name)
+            except Exception as e:
+                log.warning("list_tools failed for '%s': %s", c.name, e)
         self._tools_cache = out
         return out
 
     def call(self, *, tool_name: str, arguments, timeout_ms: int = 30000) -> ToolExecutionResult:
-        # tool_name имеет вид "<server>/<tool>" или "<server>/run"
         if "/" not in tool_name:
             return ToolExecutionResult(ok=False, output=None,
                                         error=f"tool name must be '<server>/<tool>', got {tool_name!r}")
@@ -184,18 +232,13 @@ class MCPBroker(ToolRunner):
             args_dict = dict(arguments)
         # Если инструмент зарегистрирован как "<server>/run", агент передаёт
         # command/args — преобразуем в вызов соответствующего MCP-tool.
-        # Здесь же поддерживаем «ad-hoc» режим: если short=="run", берём
-        # args["command"] как имя MCP-tool'а, а args["args"] как список.
         if short == "run":
             real_tool = args_dict.get("command")
             if not real_tool:
                 return ToolExecutionResult(ok=False, output=None,
                                             error="missing 'command' in arguments")
-            real_args = args_dict.get("args", [])
-            # Преобразуем list[str] → dict, если MCP-tool ожидает kwargs.
-            # Это упрощение: для более точной маршрутизации агент должен
-            # сам вызывать "<server>/<tool>" напрямую.
-            args_dict = {"command": real_tool, "args": real_args}
+            args_dict = {"command": args_dict.get("command"),
+                         "args": args_dict.get("args", [])}
             short = real_tool
         try:
             fut = asyncio.run_coroutine_threadsafe(
@@ -219,24 +262,20 @@ def main():
         with trace_context(env.trace_id, env.span_id):
             log.info("ToolCall tool=%s args=%s",
                      payload.tool_name, payload.arguments_json[:200])
-            import json as _json
             try:
-                args = _json.loads(payload.arguments_json) if payload.arguments_json else {}
-            except _json.JSONDecodeError as e:
-                res = ToolExecutionResult(ok=False, output=None,
-                                            error=f"invalid arguments: {e}")
+                args = json.loads(payload.arguments_json) if payload.arguments_json else {}
+            except json.JSONDecodeError as e:
                 return build_payload(PayloadType.TOOL_RESULT,
-                                     ok=False, error=str(e),
-                                     duration_ms=0)
-            t0 = __import__("time").time()
+                                     ok=False, error=str(e), duration_ms=0)
+            t0 = time.time()
             result = broker.call(
                 tool_name=payload.tool_name,
                 arguments=args,
                 timeout_ms=payload.timeout_ms or cfg.tools.get("default_timeout_ms", 30000),
             )
-            dt = int((__import__("time").time() - t0) * 1000)
+            dt = int((time.time() - t0) * 1000)
             try:
-                out_str = _json.dumps(result.output, ensure_ascii=False) \
+                out_str = json.dumps(result.output, ensure_ascii=False) \
                     if result.output is not None else ""
             except TypeError:
                 out_str = str(result.output)
@@ -254,7 +293,7 @@ def main():
         handler=handler,
         rcvtimeo_ms=cfg.zmq.get("zmq_rcvtimeo_ms", 30000),
     )
-    log.info("MCP Broker listening at %s, %d servers registered",
+    log.info("MCP Broker listening at %s, %d clients registered (lazy)",
              cfg.zmq["tools_endpoint"], len(broker._clients))
     try:
         server.serve_forever()

@@ -92,10 +92,16 @@ class FaissMemoryStore(MemoryStore):
 
     def _get_embedder(self):
         if self._embedder is None:
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer(self.embedding_model_name)
-            # Проверяем размерность.
-            dim = self._embedder.get_sentence_embedding_dimension()
+            # Сначала пытаемся sentence-transformers (прод), fallback на HashEmbedder (тесты)
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._embedder = SentenceTransformer(self.embedding_model_name)
+                dim = self._embedder.get_sentence_embedding_dimension()
+            except ImportError:
+                from common.embedder import HashEmbedder
+                log.warning("sentence-transformers unavailable; using HashEmbedder (test mode)")
+                self._embedder = HashEmbedder(self.embedding_model_name)
+                dim = self._embedder.get_sentence_embedding_dimension()
             if dim != self.embedding_dim:
                 log.warning("embedding model dim=%d, config dim=%d; updating config",
                             dim, self.embedding_dim)
