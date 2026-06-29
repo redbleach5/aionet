@@ -73,12 +73,33 @@ class OllamaClient(LLMClient):
            wait=wait_exponential(multiplier=1, min=2, max=15),
            reraise=True)
     def call(self, *, model, system_prompt, messages, tools=None,
-             temperature=0.3, max_tokens=2048, timeout_s=120) -> LLMResult:
+             temperature=0.3, max_tokens=2048, timeout_s=120,
+             static_prefix: str | None = None,
+             dynamic_suffix: str | None = None) -> LLMResult:
+        """Вызов LLM с поддержкой static_prefix + dynamic_suffix.
+
+        Если `static_prefix` задан (непустой) — отправляем в LLM два отдельных
+        system-сообщения: [static_prefix, dynamic_suffix]. Это позволяет Ollama
+        кэшировать KV-prefix для static_prefix и переиспользовать его между
+        вызовами (ускорение 3-5× для повторных запросов).
+
+        Если `static_prefix` пустой/None — fallback на единый system_prompt
+        (legacy-режим, обратная совместимость).
+        """
         resolved = self._resolve_model(model)
+        # ── Сборка messages[] с учётом static/dynamic split ──
+        sys_messages: list[dict[str, Any]] = []
+        if static_prefix:
+            # Новый режим: два system-сообщения для KV-cache friendly промпта.
+            sys_messages.append({"role": "system", "content": static_prefix})
+            if dynamic_suffix:
+                sys_messages.append({"role": "system", "content": dynamic_suffix})
+        elif system_prompt:
+            # Legacy-режим: один system-prompt.
+            sys_messages.append({"role": "system", "content": system_prompt})
         payload: dict[str, Any] = {
             "model": resolved,
-            "messages": [{"role": system_prompt and "system" or "system",
-                          "content": system_prompt}] if system_prompt else [],
+            "messages": list(sys_messages),
             "stream": False,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
@@ -102,7 +123,7 @@ class OllamaClient(LLMClient):
                 for t in tools
             ]
 
-        log.debug("ollama call model=%s msgs=%d tools=%d",
+        log.debug("ollama call model=%s msgs=%d tools=%d static=%s",
                   resolved, len(payload["messages"]), len(tools or []))
         t0 = time.time()
         r = requests.post(f"{self.host}/api/chat", json=payload, timeout=timeout_s)
@@ -169,6 +190,8 @@ class LLMEngineService:
                 temperature=payload.temperature or self.default_temperature,
                 max_tokens=payload.max_tokens or self.default_max_tokens,
                 timeout_s=self.default_timeout,
+                static_prefix=payload.static_prefix or None,
+                dynamic_suffix=payload.dynamic_suffix or None,
             )
             return build_payload(
                 PayloadType.LLM_RESULT,

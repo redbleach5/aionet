@@ -10,12 +10,16 @@
 
 from .config import Config, load_config
 from .logging import get_logger, trace_context
-from .proto import envelope, parse_payload, PayloadType, make_envelope
+from .proto import (
+    # Классы/функции, гарантированно определённые в proto.py:
+    PayloadType, make_envelope, parse_envelope, parse_payload, build_payload,
+)
 from .zmq_transport import ZMQServer, ZMQClient, ZMQPublisher, ZMQSubscriber
 
 __all__ = [
     "Config", "load_config",
     "get_logger", "trace_context",
-    "envelope", "parse_payload", "PayloadType", "make_envelope",
+    "PayloadType", "make_envelope", "parse_envelope",
+    "parse_payload", "build_payload",
     "ZMQServer", "ZMQClient", "ZMQPublisher", "ZMQSubscriber",
 ]

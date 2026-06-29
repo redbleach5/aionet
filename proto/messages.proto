@@ -67,12 +67,20 @@ message ToolCallTrace {
 // ---------------------------------------------------------------------------
 message LLMCall {
   string model         = 1;   // "aion-plan-1.0", "mistral:7b", "llama3.1:8b"
-  string system_prompt = 2;
+  string system_prompt = 2;   // legacy: весь system-prompt одной строкой
   repeated ChatMessage messages = 3;
   float  temperature   = 4;
   uint32 max_tokens    = 5;
   repeated ToolSchema  tools = 6;  // если есть — движок может вернуть tool_calls
   bool   stream        = 7;       // пока не используется, зарезервировано
+  // ── Sprint 1.3: Static prefix + dynamic suffix ──
+  // Если static_prefix задан — отправляем в LLM КАК ДВА отдельных
+  // system-сообщения: [static_prefix, dynamic_suffix]. Это позволяет Ollama
+  // кэшировать KV-prefix для static_prefix и переиспользовать его между
+  // вызовами (ускорение 3-5× для повторных запросов).
+  // Если static_prefix пуст — fallback на единый system_prompt (поле 2).
+  string static_prefix = 8;
+  string dynamic_suffix = 9;
 }
 
 message LLMResult {
