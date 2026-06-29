@@ -1,5 +1,9 @@
 # Deployment Guide — Aionet
 
+> **Связанные доки:** [`ARCHITECTURE.md`](ARCHITECTURE.md) (схема компонентов),
+> [`TESTING.md`](TESTING.md) (тестирование), [`CHANGELOG.md`](CHANGELOG.md)
+> (история версий), [`ASSUMPTIONS.md`](../ASSUMPTIONS.md) (замены компонентов).
+
 Полная инструкция по развёртыванию: порты, порядок запуска, конфиги для
 dev/prod, гайд по замене компонентов.
 

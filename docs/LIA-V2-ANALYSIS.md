@@ -1,5 +1,8 @@
 # Анализ Lia-v2 — что перенять в Aionet
 
+> **Тип:** аналитический документ (источник идей для Sprint 1-5).
+> Не содержит инструкций — для реализации см. [`SPRINT-2-PLAN.md`](SPRINT-2-PLAN.md).
+>
 > Источник: https://github.com/redbleach5/Lia-v2.git
 > Анализ выполнен при подготовке второго коммита в репозиторий Aionet.
 > Lia-v2 — Next.js + Prisma + sqlite-vec + Python-sidecar (PPO). Локальный
